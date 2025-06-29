@@ -1,88 +1,91 @@
-from os import getenv
+"""FastAPI application for a scalable WhatsApp bot."""
 
-from dotenv import load_dotenv
+from typing import Any, Dict
+
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
-from openai import OpenAI
-import requests
 
-# Load environment variables
-load_dotenv()
+from bot import config, database, session
+from bot.services import nutrition, order
+from bot.whatsapp import close as whatsapp_close, send_message
 
-# Initialize app
 app = FastAPI()
-
-# Set API keys
-client = OpenAI(api_key=getenv("OPENAI_API_KEY"))
-whatsapp_token = getenv("WHATSAPP_ACCESS_TOKEN")
-phone_number_id = getenv("WHATSAPP_PHONE_NUMBER_ID")
-verify_token = getenv("WHATSAPP_VERIFY_TOKEN")
+settings = config.get_settings()
 
 
-# Root endpoint
+@app.on_event("startup")
+async def startup() -> None:
+    await database.connect()
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    await whatsapp_close()
+    await database.close()
+
+
 @app.get("/")
-def read_root():
-    return {"message": "WhatsApp Nutritionist Bot is running 🚀"}
+async def read_root() -> Dict[str, str]:
+    return {"message": "WhatsApp Bot running"}
 
 
-# Webhook verification
 @app.get("/whatsapp")
-async def verify_webhook(request: Request):
+async def verify_webhook(request: Request) -> PlainTextResponse:
     mode = request.query_params.get("hub.mode")
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
-    if mode == "subscribe" and token == verify_token:
+    if mode == "subscribe" and token == settings.WHATSAPP_VERIFY_TOKEN:
         return PlainTextResponse(challenge)
     return PlainTextResponse("Verification failed", status_code=403)
 
 
-# WhatsApp webhook endpoint
 @app.post("/whatsapp")
-async def whatsapp_webhook(request: Request):
+async def whatsapp_webhook(request: Request) -> Dict[str, str]:
     data = await request.json()
-    print(f"Incoming webhook: {data}")
     try:
         message = data["entry"][0]["changes"][0]["value"]["messages"][0]
-        Body = message["text"]["body"]
-        From = message["from"]
-    except Exception as e:
-        print(f"Invalid message format: {e}")
+        text = message["text"]["body"].strip()
+        user_id = message["from"]
+    except Exception:
         return {"status": "ignored"}
 
-    # Create GPT-4o prompt
-    gpt_prompt = [
-        {
-            "role": "system",
-            "content": "You are a certified, friendly nutritionist. Give advice based on user's needs, ask follow-up questions when needed.",
-        },
-        {"role": "user", "content": Body},
-    ]
-
-    try:
-        # Get response from GPT-4o
-        gpt_response = client.chat.completions.create(
-            model="gpt-4o", messages=gpt_prompt, temperature=0.7
+    session_data = await session.get(user_id)
+    if not session_data:
+        await session.create(user_id, step="await_choice")
+        welcome = (
+            "Welcome! Please choose a service:\n"
+            "1️⃣ Place a food order\n"
+            "2️⃣ Chat with AI Nutritionist"
         )
-        nutritionist_reply = gpt_response.choices[0].message.content
-    except Exception as e:
-        print(f"Error communicating with OpenAI: {e}")
-        nutritionist_reply = "Sorry, I'm having trouble fetching advice at the moment. Please try again later."
+        await send_message(user_id, welcome)
+        return {"status": "new"}
 
-    # Send reply via WhatsApp Cloud API
-    url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": From,
-        "type": "text",
-        "text": {"body": nutritionist_reply},
-    }
-    headers = {"Authorization": f"Bearer {whatsapp_token}"}
+    if session_data.get("step") == "await_choice":
+        if text.startswith("1"):
+            await session.update(user_id, service="order", step="await_items", data={})
+            await send_message(
+                user_id,
+                "Please list the food items you'd like to order (e.g., Burger 2, Salad 1).",
+            )
+            return {"status": "awaiting"}
+        if text.startswith("2"):
+            history = [
+                {
+                    "role": "system",
+                    "content": "You are a certified, friendly nutritionist. Give concise advice.",
+                }
+            ]
+            await session.update(user_id, service="nutrition", step="nutrition", history=history)
+            await send_message(user_id, "Great! Tell me about your dietary goals or preferences.")
+            return {"status": "awaiting"}
+        await send_message(user_id, "Please reply with 1 or 2.")
+        return {"status": "awaiting"}
 
-    try:
-        api_response = requests.post(url, headers=headers, json=payload)
-        api_response.raise_for_status()
-    except Exception as e:
-        print(f"Error sending message to WhatsApp: {e}")
-        return {"status": "error"}
+    if session_data.get("service") == "order":
+        return await order.handle(user_id, text, session_data)
 
-    return {"status": "sent"}
+    if session_data.get("service") == "nutrition":
+        return await nutrition.handle(user_id, text, session_data)
+
+    await session.delete(user_id)
+    return {"status": "ended"}
