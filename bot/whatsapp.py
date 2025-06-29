@@ -23,3 +23,19 @@ async def send_message(to: str, text: str) -> None:
     headers = {"Authorization": f"Bearer {settings.WHATSAPP_ACCESS_TOKEN}"}
     resp = await _client.post(url, json=payload, headers=headers)
     resp.raise_for_status()
+
+
+async def send_typing_on(to: str) -> None:
+    """Send typing indicator to a WhatsApp user."""
+    settings = get_settings()
+    url = (
+        f"https://graph.facebook.com/v18.0/{settings.WHATSAPP_PHONE_NUMBER_ID}/messages"
+    )
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "typing_on",
+    }
+    headers = {"Authorization": f"Bearer {settings.WHATSAPP_ACCESS_TOKEN}"}
+    resp = await _client.post(url, json=payload, headers=headers)
+    resp.raise_for_status()
