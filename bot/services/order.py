@@ -87,7 +87,7 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
             qty = int(item.get("quantity", 0))
             if not name or qty <= 0:
                 continue
-            product = await db.products.find_one(
+            product = await db.food_products.find_one(
                 {"name": {"$regex": f"^{name}$", "$options": "i"}}
             )
             if not product:
@@ -175,7 +175,7 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
             }
             await db.orders.insert_one(order)
             for item in data.get("items", []):
-                await db.products.update_one(
+                await db.food_products.update_one(
                     {"_id": item["product_id"]},
                     {"$inc": {"stock": -item["quantity"]}},
                 )
