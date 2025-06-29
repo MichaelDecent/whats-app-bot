@@ -15,7 +15,6 @@ class FoodProduct(BaseModel):
     description: str
     price: float
     stock: int
-    image_url: Optional[str] = None
     is_available: bool = True
 
     model_config = ConfigDict(populate_by_name=True)
