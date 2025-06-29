@@ -1,6 +1,7 @@
 """Enhanced food order service with AI-powered parsing."""
 
 import json
+import logging
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -36,7 +37,7 @@ NO_WORDS = {"n", "no", "nah"}
 async def show_menu(user_id: str) -> None:
     """Send available food items to the user."""
     db = get_db()
-    products = await db.food_products.find().to_list(length=None)
+    products = await db.food_products.find({"is_available": True}).to_list(length=None)
     if not products:
         await send_message(user_id, "No food items available right now.")
         return
@@ -68,7 +69,8 @@ async def _parse_items(text: str) -> List[Dict[str, Any]]:
             temperature=0,
         )
         return json.loads(response.choices[0].message.content).get("items", [])
-    except Exception:
+    except Exception as e:
+        logging.exception(f"Failed to parse order items: {e}")
         return []
 
 
