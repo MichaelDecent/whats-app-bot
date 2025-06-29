@@ -23,11 +23,12 @@ def _openai() -> AsyncOpenAI:
 
 
 CONFIRM_TEMPLATE = Template(
-    "\u2705 Got your order:\n"
-    "{% for item in items %}- {{item.quantity}}x {{item.name}} @ \u20a6{{item.unit_price}}\n{% endfor %}"
-    "Total: \u20a6{{total}}\n"
+    "✅ Got your order:\n"
+    "{% for item in items %}- {{item.quantity}}x {{item.name}} @ ₦{{item.unit_price}}\n{% endfor %}"
+    "Total: ₦{{total}}\n"
     "Please confirm (yes/no)"
 )
+
 
 # accepted yes/no variants
 YES_WORDS = {"y", "yes", "sure", "ok"}
@@ -44,7 +45,7 @@ async def show_menu(user_id: str) -> None:
 
     lines = ["Here is our menu:"]
     for product in products:
-        lines.append(f"- {product['name']} (${product['price']})")
+        lines.append(f"- {product['name']} (₦{product['price']})")
     lines.append(
         "\nPlease type your order, e.g. 'I want 2 beef burgers and a bottle of water'."
     )
