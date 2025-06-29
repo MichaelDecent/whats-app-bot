@@ -1,19 +1,19 @@
 from datetime import datetime
 from typing import Any, Dict, List
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from ..config import get_settings
 from ..database import get_db
 from ..whatsapp import send_message
 
-_client: OpenAI | None = None
+_client: AsyncOpenAI | None = None
 
 
-def _openai() -> OpenAI:
+def _openai() -> AsyncOpenAI:
     global _client
     if _client is None:
-        _client = OpenAI(api_key=get_settings().OPENAI_API_KEY)
+        _client = AsyncOpenAI(api_key=get_settings().OPENAI_API_KEY)
     return _client
 
 
@@ -22,7 +22,7 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
     history: List[Dict[str, str]] = session.get("history", [])
     history.append({"role": "user", "content": text})
     try:
-        response = _openai().chat.completions.create(
+        response = await _openai().chat.completions.create(
             model="gpt-4o", messages=history, temperature=0.7
         )
         reply = response.choices[0].message.content
