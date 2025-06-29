@@ -67,8 +67,27 @@ async def _parse_items(text: str) -> List[Dict[str, Any]]:
             model="gpt-4o",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
+            response_format={"type": "json_object"},
         )
-        return json.loads(response.choices[0].message.content).get("items", [])
+
+        content = response.choices[0].message.content
+
+        try:
+            return json.loads(content).get("items", [])
+        except json.JSONDecodeError:
+            logging.error(f"Invalid JSON from OpenAI: {content}")
+            import re
+
+            json_match = re.search(r"\{.*?\}", content, re.DOTALL)
+            if json_match:
+                try:
+                    json_content = json_match.group(0)
+                    parsed = json.loads(json_content)
+                    return parsed.get("items", [])
+                except json.JSONDecodeError:
+                    logging.error(f"Failed to parse JSON from OpenAI: {json_content}")
+                    return []
+
     except Exception as e:
         logging.exception(f"Failed to parse order items: {e}")
         return []
