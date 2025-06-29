@@ -28,6 +28,10 @@ CONFIRM_TEMPLATE = Template(
     "Please confirm (yes/no)"
 )
 
+# accepted yes/no variants
+YES_WORDS = {"y", "yes", "sure", "ok"}
+NO_WORDS = {"n", "no", "nah"}
+
 
 async def show_menu(user_id: str) -> None:
     """Send available food items to the user."""
@@ -135,18 +139,22 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
         return {"status": "awaiting"}
 
     if step == "await_confirm":
-        if text.strip().lower().startswith("y"):
+        response = text.strip().lower()
+        if response in YES_WORDS:
             await db.sessions.update_one(
                 {"user_id": user_id},
                 {"$set": {"step": "await_address", "updated_at": datetime.utcnow()}},
             )
             await send_message(user_id, "Please provide your delivery address.")
             return {"status": "awaiting"}
-        await send_message(user_id, "Okay, please retype your order message.")
-        await db.sessions.update_one(
-            {"user_id": user_id},
-            {"$set": {"step": "await_items", "updated_at": datetime.utcnow()}},
-        )
+        if response in NO_WORDS:
+            await send_message(user_id, "Okay, please retype your order message.")
+            await db.sessions.update_one(
+                {"user_id": user_id},
+                {"$set": {"step": "await_items", "updated_at": datetime.utcnow()}},
+            )
+            return {"status": "awaiting"}
+        await send_message(user_id, "Please reply with yes or no.")
         return {"status": "awaiting"}
 
     if step == "await_address":
@@ -165,7 +173,8 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
         return {"status": "awaiting"}
 
     if step == "confirm_address":
-        if text.strip().lower().startswith("y"):
+        response = text.strip().lower()
+        if response in YES_WORDS:
             order = {
                 "user_id": user_id,
                 "items": data.get("items"),
@@ -195,12 +204,14 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
             await db.sessions.delete_one({"user_id": user_id})
             return {"status": "ordered"}
 
-        # user said no -> re-enter address
-        await db.sessions.update_one(
-            {"user_id": user_id},
-            {"$set": {"step": "await_address", "updated_at": datetime.utcnow()}},
-        )
-        await send_message(user_id, "Please re-enter your delivery address.")
+        if response in NO_WORDS:
+            await db.sessions.update_one(
+                {"user_id": user_id},
+                {"$set": {"step": "await_address", "updated_at": datetime.utcnow()}},
+            )
+            await send_message(user_id, "Please re-enter your delivery address.")
+            return {"status": "awaiting"}
+        await send_message(user_id, "Please reply with yes or no.")
         return {"status": "awaiting"}
 
     await db.sessions.delete_one({"user_id": user_id})
