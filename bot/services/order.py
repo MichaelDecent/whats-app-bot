@@ -52,7 +52,11 @@ async def show_menu(user_id: str) -> None:
 
 async def _parse_items(text: str) -> List[Dict[str, Any]]:
     """Use OpenAI to parse free-text order into structured items."""
+    db = get_db()
+    products = await db.food_products.find({"is_available": True}).to_list(length=None)
+    names = ", ".join(p.get("name") for p in products)
     prompt = (
+        f"Available items: {names}\n"
         "Extract food items and their quantities from this message. "
         "Respond only with valid JSON in the form {'items': [{'product': '', 'quantity': 1}]}.\n"
         f"Message: {text}"
