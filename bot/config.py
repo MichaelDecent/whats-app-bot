@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     DELIVERY_PHONE_NUMBER: str | None = None
     MONGO_URL: str
     MONGO_DB_NAME: str
+    MONGO_COLLECTION_NAME: str
     SESSION_TTL_SECONDS: int
 
     class Config:
