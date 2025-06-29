@@ -1,5 +1,6 @@
 """Enhanced food order service with AI-powered parsing."""
 
+
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -173,6 +174,7 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
             await send_message(
                 user_id,
                 f"\u2705 Your order has been placed! Total: \u20a6{data['total_price']}",
+
             )
             await db.sessions.delete_one({"user_id": user_id})
             return {"status": "ordered"}
