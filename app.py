@@ -10,7 +10,7 @@ from bot.services import nutrition, order
 from bot.whatsapp import close as whatsapp_close
 from bot.whatsapp import send_message
 
-from .seed import seed_food_products
+from seed import seed_food_products
 
 app = FastAPI()
 settings = config.get_settings()
