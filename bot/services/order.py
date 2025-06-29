@@ -1,16 +1,15 @@
 """Enhanced food order service with AI-powered parsing."""
 
-
+import json
 from datetime import datetime
 from typing import Any, Dict, List
 
-import json
 from jinja2 import Template
 from openai import OpenAI
 
 from ..config import get_settings
 from ..database import get_db
-from ..whatsapp import send_message, send_typing_on
+from ..whatsapp import send_message
 
 _client: OpenAI | None = None
 
@@ -33,7 +32,7 @@ CONFIRM_TEMPLATE = Template(
 async def show_menu(user_id: str) -> None:
     """Send available food items to the user."""
     db = get_db()
-    await send_typing_on(user_id)
+    # await send_typing_on(user_id)
     products = await db.products.find().to_list(length=None)
     if not products:
         await send_message(user_id, "No food items available right now.")
@@ -75,10 +74,12 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
     step = session.get("step")
 
     if step == "await_items":
-        await send_typing_on(user_id)
+        # await send_typing_on(user_id)
         parsed = await _parse_items(text)
         if not parsed:
-            await send_message(user_id, "Sorry, I couldn't understand your order. Please try again.")
+            await send_message(
+                user_id, "Sorry, I couldn't understand your order. Please try again."
+            )
             return {"status": "awaiting"}
 
         order_items: List[Dict[str, Any]] = []
@@ -88,7 +89,9 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
             qty = int(item.get("quantity", 0))
             if not name or qty <= 0:
                 continue
-            product = await db.products.find_one({"name": {"$regex": f"^{name}$", "$options": "i"}})
+            product = await db.products.find_one(
+                {"name": {"$regex": f"^{name}$", "$options": "i"}}
+            )
             if not product:
                 await send_message(user_id, f"Sorry, {name} is not available.")
                 return {"status": "awaiting"}
@@ -110,14 +113,23 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
             total += product["price"] * qty
 
         if not order_items:
-            await send_message(user_id, "I couldn't find any valid items in your order. Please try again.")
+            await send_message(
+                user_id,
+                "I couldn't find any valid items in your order. Please try again.",
+            )
             return {"status": "awaiting"}
 
         data.update({"items": order_items, "total_price": total})
 
         await db.sessions.update_one(
             {"user_id": user_id},
-            {"$set": {"data": data, "step": "await_confirm", "updated_at": datetime.utcnow()}},
+            {
+                "$set": {
+                    "data": data,
+                    "step": "await_confirm",
+                    "updated_at": datetime.utcnow(),
+                }
+            },
         )
 
         summary = CONFIRM_TEMPLATE.render(items=order_items, total=total)
@@ -143,7 +155,13 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
         data["address"] = text
         await db.sessions.update_one(
             {"user_id": user_id},
-            {"$set": {"data": data, "step": "confirm_address", "updated_at": datetime.utcnow()}},
+            {
+                "$set": {
+                    "data": data,
+                    "step": "confirm_address",
+                    "updated_at": datetime.utcnow(),
+                }
+            },
         )
         await send_message(user_id, f"You entered: {text}\nIs this correct? (yes/no)")
         return {"status": "awaiting"}
@@ -157,7 +175,7 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 "address": data.get("address"),
                 "created_at": datetime.utcnow(),
             }
-            await send_typing_on(user_id)
+            # await send_typing_on(user_id)
             await db.orders.insert_one(order)
             for item in data.get("items", []):
                 await db.products.update_one(
@@ -168,13 +186,14 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
             if delivery:
                 lines = [f"New order from {user_id}:"]
                 for i in data.get("items", []):
-                    lines.append(f"{i['quantity']} x {i['name']} (@ \u20a6{i['unit_price']})")
+                    lines.append(
+                        f"{i['quantity']} x {i['name']} (@ \u20a6{i['unit_price']})"
+                    )
                 lines.append(f"Address: {data['address']}")
                 await send_message(delivery, "\n".join(lines))
             await send_message(
                 user_id,
                 f"\u2705 Your order has been placed! Total: \u20a6{data['total_price']}",
-
             )
             await db.sessions.delete_one({"user_id": user_id})
             return {"status": "ordered"}
@@ -189,4 +208,3 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
 
     await db.sessions.delete_one({"user_id": user_id})
     return {"status": "error"}
-
