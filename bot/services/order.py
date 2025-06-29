@@ -7,6 +7,7 @@ from ..whatsapp import send_message
 
 
 async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, str]:
+    settings = get_settings()
     db = get_db()
     data = session.get("data", {})
     step = session.get("step")
@@ -52,7 +53,7 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
             }
             await db.orders.insert_one(order)
             await send_message(user_id, "Thank you! Your order has been placed.")
-            delivery = get_settings().DELIVERY_PHONE_NUMBER
+            delivery = settings.DELIVERY_PHONE_NUMBER
             if delivery:
                 deliver_msg = f"New order from {user_id}:\nItems: {data['items']}\nAddress: {data['address']}"
                 await send_message(delivery, deliver_msg)
