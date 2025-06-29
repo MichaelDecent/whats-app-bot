@@ -64,10 +64,7 @@ async def whatsapp_webhook(request: Request) -> Dict[str, str]:
     if session_data.get("step") == "await_choice":
         if text.startswith("1"):
             await session.update(user_id, service="order", step="await_items", data={})
-            await send_message(
-                user_id,
-                "Please list the food items you'd like to order (e.g., Burger 2, Salad 1).",
-            )
+            await order.show_menu(user_id)
             return {"status": "awaiting"}
         if text.startswith("2"):
             history = [
