@@ -3,10 +3,9 @@ from typing import Any, Dict, List
 
 from openai import OpenAI
 
+from ..config import get_settings
 from ..database import get_db
 from ..whatsapp import send_message
-from ..config import get_settings
-
 
 _client: OpenAI | None = None
 
@@ -32,7 +31,13 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
     history.append({"role": "assistant", "content": reply})
     await db.sessions.update_one(
         {"user_id": user_id},
-        {"$set": {"history": history, "step": "nutrition", "updated_at": datetime.utcnow()}},
+        {
+            "$set": {
+                "history": history,
+                "step": "nutrition",
+                "updated_at": datetime.utcnow(),
+            }
+        },
     )
     await send_message(user_id, reply)
     if text.strip().lower() in {"bye", "exit", "cancel"}:

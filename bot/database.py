@@ -1,6 +1,3 @@
-from datetime import datetime
-from typing import Any
-
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from .config import get_settings
@@ -15,7 +12,9 @@ async def connect() -> None:
     settings = get_settings()
     client = AsyncIOMotorClient(settings.MONGO_URL)
     db = client[settings.MONGO_DB_NAME]
-    await db.sessions.create_index("updated_at", expireAfterSeconds=settings.SESSION_TTL_SECONDS)
+    await db.sessions.create_index(
+        "updated_at", expireAfterSeconds=settings.SESSION_TTL_SECONDS
+    )
 
 
 def get_db() -> AsyncIOMotorDatabase:

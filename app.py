@@ -1,13 +1,14 @@
 """FastAPI application for a scalable WhatsApp bot."""
 
-from typing import Any, Dict
+from typing import Dict
 
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 
 from bot import config, database, session
 from bot.services import nutrition, order
-from bot.whatsapp import close as whatsapp_close, send_message
+from bot.whatsapp import close as whatsapp_close
+from bot.whatsapp import send_message
 
 app = FastAPI()
 settings = config.get_settings()
@@ -75,8 +76,12 @@ async def whatsapp_webhook(request: Request) -> Dict[str, str]:
                     "content": "You are a certified, friendly nutritionist. Give concise advice.",
                 }
             ]
-            await session.update(user_id, service="nutrition", step="nutrition", history=history)
-            await send_message(user_id, "Great! Tell me about your dietary goals or preferences.")
+            await session.update(
+                user_id, service="nutrition", step="nutrition", history=history
+            )
+            await send_message(
+                user_id, "Great! Tell me about your dietary goals or preferences."
+            )
             return {"status": "awaiting"}
         await send_message(user_id, "Please reply with 1 or 2.")
         return {"status": "awaiting"}
