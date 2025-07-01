@@ -197,12 +197,25 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 "address": data.get("address"),
                 "created_at": datetime.utcnow(),
             }
-            await db.orders.insert_one(order)
+            updated: List[Dict[str, Any]] = []
             for item in data.get("items", []):
-                await db.food_products.update_one(
-                    {"_id": item["product_id"]},
+                result = await db.food_products.find_one_and_update(
+                    {"_id": item["product_id"], "stock": {"$gte": item["quantity"]}},
                     {"$inc": {"stock": -item["quantity"]}},
                 )
+                if not result:
+                    for u in updated:
+                        await db.food_products.update_one(
+                            {"_id": u["product_id"]},
+                            {"$inc": {"stock": u["quantity"]}},
+                        )
+                    await send_message(
+                        user_id,
+                        f"\u2757 Requested quantity not available. Only insufficient stock for {item['name']}",
+                    )
+                    return {"status": "awaiting"}
+                updated.append(item)
+            await db.orders.insert_one(order)
             delivery = settings.DELIVERY_PHONE_NUMBER
             if delivery:
                 lines = [f"New order from {user_id}:"]
