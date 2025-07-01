@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+
 from openai import AsyncOpenAI
 
 from .config import get_settings
@@ -18,13 +19,15 @@ def get_openai_client() -> AsyncOpenAI:
     return _client
 
 
-async def create_chat_completion(*args, retries: int = 3, backoff: float = 1.0, **kwargs):
+async def create_chat_completion(
+    *args, retries: int = 3, backoff: float = 1.0, **kwargs
+):
     """Wrapper around OpenAI chat completion with retries."""
     client = get_openai_client()
     for attempt in range(1, retries + 1):
         try:
             return await client.chat.completions.create(*args, **kwargs)
-        except Exception as exc:
+        except Exception:
             logging.exception("OpenAI attempt %s failed", attempt)
             if attempt == retries:
                 logging.exception("OpenAI request failed after %s attempts", retries)

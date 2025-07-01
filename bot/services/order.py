@@ -5,20 +5,22 @@ import logging
 import re
 from datetime import datetime
 from typing import Any, Dict, List
-from bson import ObjectId
 
+from bson import ObjectId
 from jinja2 import Template
+
 from ..ai_client import create_chat_completion
 from ..config import get_settings
 from ..database import get_db
+from ..models import Order, OrderItem
 from ..whatsapp import send_message
-from ..models import OrderItem, Order
 
 CONFIRM_TEMPLATE = Template(
-    "✅ Got your order:\n"
-    "{% for item in items %}- {{item.quantity}}x {{item.name}} @ ₦{{item.unit_price}}\n{% endfor %}"
-    "Total: ₦{{total}}\n"
-    "Please confirm (yes/no) or type 'change' to edit"
+    "✅ *Order Summary:*\n"
+    "{% for item in items %}🍽️ *{{item.quantity}}x* _{{item.name}}_ @ ₦{{item.unit_price}}\n{% endfor %}"
+    "-----------------------------\n"
+    "💰 *Total:* ₦{{total}}\n"
+    "Please confirm (yes/no) or type 'change' to edit."
 )
 
 
@@ -34,22 +36,25 @@ async def show_menu(user_id: str) -> None:
     db = get_db()
     products = await db.food_products.find({"is_available": True}).to_list(length=None)
     if not products:
-        await send_message(user_id, "No food items available right now.")
+        await send_message(user_id, "😔 No food items available right now.")
         return
 
-    lines = ["Here is our menu:"]
+    lines = ["🍽️ *Here is our menu:*"]
     for idx, product in enumerate(products, start=1):
-        lines.append(f"{idx}. {product['name']} – ₦{product['price']}")
+        lines.append(
+            f"{idx}. _{product['name']}_ – ₦{product['price']} ({'✅ Available' if product['is_available'] else '❌ Out of stock'})"
+        )
     lines.append(
-        "\nType the item numbers and quantities, or type `cancel` anytime."
+        "\n📝 *Type the item numbers and quantities.*\n"
+        "Type `cancel` anytime to cancel. During confirmation, reply `edit` to modify items."
     )
-    lines.append("Type 'cancel' anytime to cancel. During confirmation, reply 'edit' to modify items.")
     await send_message(user_id, "\n".join(lines))
 
 
-def _extract_items_regex(text: str, products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _extract_items_regex(
+    text: str, products: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
     """Simple regex based parser as a fallback."""
-    import re
 
     pattern = re.compile(r"(\d+)x?\s*([A-Za-z ]+)", re.IGNORECASE)
     items: List[Dict[str, Any]] = []
@@ -76,7 +81,7 @@ async def _parse_items(text: str) -> List[Dict[str, Any]]:
     products = await db.food_products.find({"is_available": True}).to_list(length=None)
 
     names = ", ".join(p.get("name") for p in products)
-    codes = ", ".join(f"{idx+1}={p['name']}" for idx, p in enumerate(products))
+    codes = ", ".join(f"{idx + 1}={p['name']}" for idx, p in enumerate(products))
     synonyms = ", ".join(
         f"{p['name'].split()[-1].lower()}={p['name']}" for p in products
     )
@@ -142,21 +147,21 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
     command = text.strip().lower()
     if command == "cancel":
         await db.sessions.delete_one({"user_id": user_id})
-        await send_message(user_id, "❌ Order cancelled.")
+        await send_message(user_id, "❌ *Order cancelled.*")
         return {"status": "cancelled"}
     if step == "await_confirm" and command == "edit":
         await db.sessions.update_one(
             {"user_id": user_id},
             {"$set": {"step": "await_items", "updated_at": datetime.utcnow()}},
         )
-        await send_message(user_id, "Okay, please retype your order message.")
+        await send_message(user_id, "✏️ Okay, please retype your order message.")
         return {"status": "awaiting"}
 
     if step == "await_items":
         parsed = await _parse_items(text)
         if not parsed:
             await send_message(
-                user_id, "Sorry, I couldn't understand your order. Please try again."
+                user_id, "⚠️ Sorry, I couldn't understand your order. Please try again."
             )
             return {"status": "awaiting"}
 
@@ -171,12 +176,12 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 {"name": {"$regex": f"^{name}$", "$options": "i"}}
             )
             if not product:
-                await send_message(user_id, f"Sorry, {name} is not available.")
+                await send_message(user_id, f"❌ Sorry, *{name}* is not available.")
                 return {"status": "awaiting"}
             if product.get("stock", 0) < qty:
                 await send_message(
                     user_id,
-                    f"\u2757 Requested quantity not available. Only {product.get('stock', 0)} unit(s) of {product['name']} in stock.",
+                    f"⚠️ Requested quantity not available. Only {product.get('stock', 0)} unit(s) of *{product['name']}* in stock.",
                 )
                 return {"status": "awaiting"}
 
@@ -193,7 +198,7 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
         if not order_items:
             await send_message(
                 user_id,
-                "I couldn't find any valid items in your order. Please try again.",
+                "⚠️ I couldn't find any valid items in your order. Please try again.",
             )
             return {"status": "awaiting"}
 
@@ -221,23 +226,18 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 {"user_id": user_id},
                 {"$set": {"step": "await_address", "updated_at": datetime.utcnow()}},
             )
-            await send_message(user_id, "Please provide your delivery address.")
+            await send_message(user_id, "🏠 Please provide your *delivery address*.")
             return {"status": "awaiting"}
-        if response in NO_WORDS:
-            await send_message(user_id, "Okay, please retype your order message.")
+        if response in NO_WORDS or response in CHANGE_WORDS:
+            await send_message(user_id, "✏️ Okay, please retype your order message.")
             await db.sessions.update_one(
                 {"user_id": user_id},
                 {"$set": {"step": "await_items", "updated_at": datetime.utcnow()}},
             )
             return {"status": "awaiting"}
-        if response in CHANGE_WORDS:
-            await send_message(user_id, "Okay, please retype your order message.")
-            await db.sessions.update_one(
-                {"user_id": user_id},
-                {"$set": {"step": "await_items", "updated_at": datetime.utcnow()}},
-            )
-            return {"status": "awaiting"}
-        await send_message(user_id, "Please reply with yes or no, or type 'change'.")
+        await send_message(
+            user_id, "❓ Please reply with *yes* or *no*, or type 'change'."
+        )
         return {"status": "awaiting"}
 
     if step == "await_address":
@@ -254,7 +254,7 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
         )
         await send_message(
             user_id,
-            f"You entered: {text}\nIs this correct? (yes/no) or type 'change' to edit",
+            f"📍 You entered: _{text}_\nIs this correct? (yes/no) or type 'change' to edit.",
         )
         return {"status": "awaiting"}
 
@@ -276,14 +276,19 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 }
                 order_model = Order.model_validate(order_data)
             except Exception:
-                await send_message(user_id, "\u274c Invalid order data. Please start again.")
+                await send_message(
+                    user_id, "\u274c Invalid order data. Please start again."
+                )
                 await db.sessions.delete_one({"user_id": user_id})
                 return {"status": "error"}
 
             updated: List[OrderItem] = []
             for item in items:
                 result = await db.food_products.update_one(
-                    {"_id": ObjectId(item.product_id), "stock": {"$gte": item.quantity}},
+                    {
+                        "_id": ObjectId(item.product_id),
+                        "stock": {"$gte": item.quantity},
+                    },
                     {"$inc": {"stock": -item.quantity}},
                 )
                 if result.matched_count == 0:
@@ -311,23 +316,23 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 await send_message(delivery, "\n".join(lines))
             await send_message(
                 user_id,
-                f"\u2705 Your order has been placed! Total: \u20a6{data['total_price']}",
+                f"✅ *Your order has been placed!*\n💰 *Total:* ₦{data['total_price']}",
             )
             eta_message = getattr(settings, "ORDER_ETA_MESSAGE", None)
             if eta_message:
-                await send_message(user_id, eta_message)
+                await send_message(user_id, f"⏳ {eta_message}")
             await db.sessions.delete_one({"user_id": user_id})
             return {"status": "ordered"}
-
         if response in NO_WORDS:
             await db.sessions.update_one(
                 {"user_id": user_id},
                 {"$set": {"step": "await_address", "updated_at": datetime.utcnow()}},
             )
-            await send_message(user_id, "Please re-enter your delivery address.")
+            await send_message(user_id, "✏️ Please re-enter your *delivery address*.")
             return {"status": "awaiting"}
-        await send_message(user_id, "Please reply with yes or no.")
+        await send_message(user_id, "❓ Please reply with *yes* or *no*.")
         return {"status": "awaiting"}
 
     await db.sessions.delete_one({"user_id": user_id})
+    await send_message(user_id, "⚠️ Session ended due to an error. Please start again.")
     return {"status": "error"}
