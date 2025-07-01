@@ -41,6 +41,7 @@ async def show_menu(user_id: str) -> None:
     lines.append(
         "\nType the item numbers and quantities, or type `cancel` anytime."
     )
+    lines.append("Type 'cancel' anytime to cancel. During confirmation, reply 'edit' to modify items.")
     await send_message(user_id, "\n".join(lines))
 
 
@@ -105,6 +106,19 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
     db = get_db()
     data = session.get("data", {})
     step = session.get("step")
+
+    command = text.strip().lower()
+    if command == "cancel":
+        await db.sessions.delete_one({"user_id": user_id})
+        await send_message(user_id, "❌ Order cancelled.")
+        return {"status": "cancelled"}
+    if step == "await_confirm" and command == "edit":
+        await db.sessions.update_one(
+            {"user_id": user_id},
+            {"$set": {"step": "await_items", "updated_at": datetime.utcnow()}},
+        )
+        await send_message(user_id, "Okay, please retype your order message.")
+        return {"status": "awaiting"}
 
     if step == "await_items":
         parsed = await _parse_items(text)
