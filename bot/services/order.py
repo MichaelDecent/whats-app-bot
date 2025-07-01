@@ -16,13 +16,15 @@ CONFIRM_TEMPLATE = Template(
     "✅ Got your order:\n"
     "{% for item in items %}- {{item.quantity}}x {{item.name}} @ ₦{{item.unit_price}}\n{% endfor %}"
     "Total: ₦{{total}}\n"
-    "Please confirm (yes/no)"
+    "Please confirm (yes/no) or type 'change' to edit"
 )
 
 
 # accepted yes/no variants
 YES_WORDS = {"y", "yes", "sure", "ok"}
 NO_WORDS = {"n", "no", "nah"}
+# words indicating the user wants to change the order
+CHANGE_WORDS = {"change", "edit"}
 
 
 async def show_menu(user_id: str) -> None:
@@ -182,7 +184,14 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 {"$set": {"step": "await_items", "updated_at": datetime.utcnow()}},
             )
             return {"status": "awaiting"}
-        await send_message(user_id, "Please reply with yes or no.")
+        if response in CHANGE_WORDS:
+            await send_message(user_id, "Okay, please retype your order message.")
+            await db.sessions.update_one(
+                {"user_id": user_id},
+                {"$set": {"step": "await_items", "updated_at": datetime.utcnow()}},
+            )
+            return {"status": "awaiting"}
+        await send_message(user_id, "Please reply with yes or no, or type 'change'.")
         return {"status": "awaiting"}
 
     if step == "await_address":
@@ -197,7 +206,10 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 }
             },
         )
-        await send_message(user_id, f"You entered: {text}\nIs this correct? (yes/no)")
+        await send_message(
+            user_id,
+            f"You entered: {text}\nIs this correct? (yes/no) or type 'change' to edit",
+        )
         return {"status": "awaiting"}
 
     if step == "confirm_address":
