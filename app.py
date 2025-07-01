@@ -2,13 +2,13 @@
 
 from typing import Dict
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import PlainTextResponse
 
 from bot import config, database, session
 from bot.services import nutrition, order
 from bot.whatsapp import close as whatsapp_close
-from bot.whatsapp import send_message
+from bot.whatsapp import send_message, start_worker
 
 from seed import seed_food_products
 
@@ -20,6 +20,7 @@ settings = config.get_settings()
 async def startup() -> None:
     await database.connect()
     await seed_food_products()
+    start_worker()
 
 
 @app.on_event("shutdown")
@@ -44,7 +45,9 @@ async def verify_webhook(request: Request) -> PlainTextResponse:
 
 
 @app.post("/whatsapp")
-async def whatsapp_webhook(request: Request) -> Dict[str, str]:
+async def whatsapp_webhook(
+    request: Request, background_tasks: BackgroundTasks
+) -> Dict[str, str]:
     data = await request.json()
     try:
         message = data["entry"][0]["changes"][0]["value"]["messages"][0]
@@ -61,7 +64,7 @@ async def whatsapp_webhook(request: Request) -> Dict[str, str]:
             "1️⃣ Place a food order\n"
             "2️⃣ Chat with AI Nutritionist"
         )
-        await send_message(user_id, welcome)
+        background_tasks.add_task(send_message, user_id, welcome, use_queue=True)
         return {"status": "new"}
 
     if session_data.get("step") == "await_choice":
@@ -79,11 +82,16 @@ async def whatsapp_webhook(request: Request) -> Dict[str, str]:
             await session.update(
                 user_id, service="nutrition", step="nutrition", history=history
             )
-            await send_message(
-                user_id, "Great! Tell me about your dietary goals or preferences."
+            background_tasks.add_task(
+                send_message,
+                user_id,
+                "Great! Tell me about your dietary goals or preferences.",
+                use_queue=True,
             )
             return {"status": "awaiting"}
-        await send_message(user_id, "Please reply with 1 or 2.")
+        background_tasks.add_task(
+            send_message, user_id, "Please reply with 1 or 2.", use_queue=True
+        )
         return {"status": "awaiting"}
 
     if session_data.get("service") == "order":
