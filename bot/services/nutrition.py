@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, List
 
-from ..ai_client import get_openai_client
+from ..ai_client import create_chat_completion
 from ..config import get_settings
 from ..database import get_db
 from ..whatsapp import send_message
@@ -12,7 +12,7 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
     history: List[Dict[str, str]] = session.get("history", [])
     history.append({"role": "user", "content": text})
     try:
-        response = await get_openai_client().chat.completions.create(
+        response = await create_chat_completion(
             model=get_settings().MODEL_MODEL, messages=history, temperature=0.7
         )
         reply = response.choices[0].message.content
