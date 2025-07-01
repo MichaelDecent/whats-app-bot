@@ -11,6 +11,7 @@ from ..ai_client import create_chat_completion
 from ..config import get_settings
 from ..database import get_db
 from ..whatsapp import send_message
+from ..models import OrderItem, Order
 
 CONFIRM_TEMPLATE = Template(
     "✅ Got your order:\n"
@@ -259,18 +260,26 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
     if step == "confirm_address":
         response = text.strip().lower()
         if response in YES_WORDS:
-            order = {
-                "user_id": user_id,
-                "items": data.get("items"),
-                "total_price": data.get("total_price"),
-                "address": data.get("address"),
-                "created_at": datetime.utcnow(),
-            }
-            updated: List[Dict[str, Any]] = []
-            for item in data.get("items", []):
-                result = await db.food_products.find_one_and_update(
-                    {"_id": item["product_id"], "stock": {"$gte": item["quantity"]}},
-                    {"$inc": {"stock": -item["quantity"]}},
+            try:
+                items = [OrderItem.model_validate(i) for i in data.get("items", [])]
+                order_data = {
+                    "user_id": user_id,
+                    "items": items,
+                    "total_price": data.get("total_price"),
+                    "delivery_address": data.get("address"),
+                    "created_at": datetime.utcnow(),
+                }
+                order_model = Order.model_validate(order_data)
+            except Exception:
+                await send_message(user_id, "\u274c Invalid order data. Please start again.")
+                await db.sessions.delete_one({"user_id": user_id})
+                return {"status": "error"}
+
+            await db.orders.insert_one(order_model.model_dump(by_alias=True))
+            for item in items:
+                await db.food_products.update_one(
+                    {"_id": item.product_id},
+                    {"$inc": {"stock": -item.quantity}},
                 )
                 if not result:
                     for u in updated:
