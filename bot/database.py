@@ -12,6 +12,8 @@ async def connect() -> None:
     settings = get_settings()
     client = AsyncIOMotorClient(settings.MONGO_URL)
     db = client[settings.MONGO_DB_NAME]
+    # TTL index ensures MongoDB automatically removes sessions after
+    # ``SESSION_TTL_SECONDS`` since the last ``updated_at`` timestamp.
     await db.sessions.create_index(
         "updated_at", expireAfterSeconds=settings.SESSION_TTL_SECONDS
     )
