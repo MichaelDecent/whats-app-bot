@@ -37,7 +37,9 @@ async def _process_queue() -> None:
 async def _send(to: str, text: str, *, retries: int = 3, backoff: float = 1.0) -> None:
     """Send a message with retry logic."""
     settings = get_settings()
-    url = f"https://graph.facebook.com/v18.0/{settings.WHATSAPP_PHONE_NUMBER_ID}/messages"
+    url = (
+        f"https://graph.facebook.com/v18.0/{settings.WHATSAPP_PHONE_NUMBER_ID}/messages"
+    )
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
@@ -82,4 +84,3 @@ async def close() -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await _worker_task
     await _client.aclose()
-
