@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from jinja2 import Template
-from ..ai_client import get_openai_client
+from ..ai_client import create_chat_completion
 from ..config import get_settings
 from ..database import get_db
 from ..whatsapp import send_message
@@ -53,7 +53,7 @@ async def _parse_items(text: str) -> List[Dict[str, Any]]:
         f"Message: {text}"
     )
     try:
-        response = await get_openai_client().chat.completions.create(
+        response = await create_chat_completion(
             model=get_settings().MODEL_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
