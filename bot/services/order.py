@@ -2,11 +2,12 @@
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List
 
 from jinja2 import Template
-from ..ai_client import get_openai_client
+from ..ai_client import create_chat_completion
 from ..config import get_settings
 from ..database import get_db
 from ..whatsapp import send_message
@@ -15,13 +16,15 @@ CONFIRM_TEMPLATE = Template(
     "✅ Got your order:\n"
     "{% for item in items %}- {{item.quantity}}x {{item.name}} @ ₦{{item.unit_price}}\n{% endfor %}"
     "Total: ₦{{total}}\n"
-    "Please confirm (yes/no)"
+    "Please confirm (yes/no) or type 'change' to edit"
 )
 
 
 # accepted yes/no variants
 YES_WORDS = {"y", "yes", "sure", "ok"}
 NO_WORDS = {"n", "no", "nah"}
+# words indicating the user wants to change the order
+CHANGE_WORDS = {"change", "edit"}
 
 
 async def show_menu(user_id: str) -> None:
@@ -33,10 +36,10 @@ async def show_menu(user_id: str) -> None:
         return
 
     lines = ["Here is our menu:"]
-    for product in products:
-        lines.append(f"- {product['name']} (₦{product['price']})")
+    for idx, product in enumerate(products, start=1):
+        lines.append(f"{idx}. {product['name']} – ₦{product['price']}")
     lines.append(
-        "\nPlease type your order, e.g. 'I want 2 beef burgers and a bottle of water'."
+        "\nType the item numbers and quantities, or type `cancel` anytime."
     )
     lines.append("Type 'cancel' anytime to cancel. During confirmation, reply 'edit' to modify items.")
     await send_message(user_id, "\n".join(lines))
@@ -46,6 +49,19 @@ async def _parse_items(text: str) -> List[Dict[str, Any]]:
     """Use OpenAI to parse free-text order into structured items."""
     db = get_db()
     products = await db.food_products.find({"is_available": True}).to_list(length=None)
+
+    # try to parse numeric codes first, e.g. "1x2 3"
+    numeric_items: List[Dict[str, Any]] = []
+    for code, qty in re.findall(r"(\d+)(?:\s*[xX]\s*(\d+))?", text):
+        idx = int(code) - 1
+        if 0 <= idx < len(products):
+            quantity = int(qty) if qty else 1
+            if quantity > 0:
+                numeric_items.append({"product": products[idx]["name"], "quantity": quantity})
+
+    if numeric_items:
+        return numeric_items
+
     names = ", ".join(p.get("name") for p in products)
     prompt = (
         f"Available items: {names}\n"
@@ -54,7 +70,7 @@ async def _parse_items(text: str) -> List[Dict[str, Any]]:
         f"Message: {text}"
     )
     try:
-        response = await get_openai_client().chat.completions.create(
+        response = await create_chat_completion(
             model=get_settings().MODEL_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
@@ -67,7 +83,6 @@ async def _parse_items(text: str) -> List[Dict[str, Any]]:
             return json.loads(content).get("items", [])
         except json.JSONDecodeError:
             logging.error(f"Invalid JSON from OpenAI: {content}")
-            import re
 
             json_match = re.search(r"\{.*?\}", content, re.DOTALL)
             if json_match:
@@ -183,7 +198,14 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 {"$set": {"step": "await_items", "updated_at": datetime.utcnow()}},
             )
             return {"status": "awaiting"}
-        await send_message(user_id, "Please reply with yes or no.")
+        if response in CHANGE_WORDS:
+            await send_message(user_id, "Okay, please retype your order message.")
+            await db.sessions.update_one(
+                {"user_id": user_id},
+                {"$set": {"step": "await_items", "updated_at": datetime.utcnow()}},
+            )
+            return {"status": "awaiting"}
+        await send_message(user_id, "Please reply with yes or no, or type 'change'.")
         return {"status": "awaiting"}
 
     if step == "await_address":
@@ -198,7 +220,10 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 }
             },
         )
-        await send_message(user_id, f"You entered: {text}\nIs this correct? (yes/no)")
+        await send_message(
+            user_id,
+            f"You entered: {text}\nIs this correct? (yes/no) or type 'change' to edit",
+        )
         return {"status": "awaiting"}
 
     if step == "confirm_address":
@@ -211,12 +236,25 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 "address": data.get("address"),
                 "created_at": datetime.utcnow(),
             }
-            await db.orders.insert_one(order)
+            updated: List[Dict[str, Any]] = []
             for item in data.get("items", []):
-                await db.food_products.update_one(
-                    {"_id": item["product_id"]},
+                result = await db.food_products.find_one_and_update(
+                    {"_id": item["product_id"], "stock": {"$gte": item["quantity"]}},
                     {"$inc": {"stock": -item["quantity"]}},
                 )
+                if not result:
+                    for u in updated:
+                        await db.food_products.update_one(
+                            {"_id": u["product_id"]},
+                            {"$inc": {"stock": u["quantity"]}},
+                        )
+                    await send_message(
+                        user_id,
+                        f"\u2757 Requested quantity not available. Only insufficient stock for {item['name']}",
+                    )
+                    return {"status": "awaiting"}
+                updated.append(item)
+            await db.orders.insert_one(order)
             delivery = settings.DELIVERY_PHONE_NUMBER
             if delivery:
                 lines = [f"New order from {user_id}:"]
