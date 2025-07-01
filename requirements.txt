@@ -57,3 +57,4 @@ websockets==15.0.1
 yarl==1.20.0
 pytest==8.2.0
 pytest-asyncio==0.23.6
+
