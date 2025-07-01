@@ -4,7 +4,8 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    OPENAI_API_KEY: str | None = None
+    API_KEY: str | None = None
+    MODEL_MODEL: str
     WHATSAPP_ACCESS_TOKEN: str
     WHATSAPP_PHONE_NUMBER_ID: str
     WHATSAPP_VERIFY_TOKEN: str

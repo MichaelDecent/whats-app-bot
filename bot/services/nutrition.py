@@ -1,20 +1,10 @@
 from datetime import datetime
 from typing import Any, Dict, List
 
-from openai import AsyncOpenAI
-
+from ..ai_client import get_openai_client
 from ..config import get_settings
 from ..database import get_db
 from ..whatsapp import send_message
-
-_client: AsyncOpenAI | None = None
-
-
-def _openai() -> AsyncOpenAI:
-    global _client
-    if _client is None:
-        _client = AsyncOpenAI(api_key=get_settings().OPENAI_API_KEY)
-    return _client
 
 
 async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, str]:
@@ -22,8 +12,8 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
     history: List[Dict[str, str]] = session.get("history", [])
     history.append({"role": "user", "content": text})
     try:
-        response = await _openai().chat.completions.create(
-            model="gpt-4o", messages=history, temperature=0.7
+        response = await get_openai_client().chat.completions.create(
+            model=get_settings().MODEL_MODEL, messages=history, temperature=0.7
         )
         reply = response.choices[0].message.content
     except Exception:
