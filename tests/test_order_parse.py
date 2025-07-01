@@ -6,6 +6,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from bot.services import order as order_service
+from bot import ai_client
 
 
 class DummySettings:
@@ -38,7 +39,7 @@ async def test_parse_items_api_success(monkeypatch):
                 choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=self.content))]
             )
 
-    monkeypatch.setattr(order_service, "get_openai_client", lambda: FakeClient('{"items": [{"product": "Cheeseburger", "quantity": 2}]}'))
+    monkeypatch.setattr(ai_client, "get_openai_client", lambda: FakeClient('{"items": [{"product": "Cheeseburger", "quantity": 2}]}'))
 
     items = await order_service._parse_items("2x burger")
     assert items == [{"product": "Cheeseburger", "quantity": 2}]
@@ -62,6 +63,6 @@ async def test_parse_items_regex_fallback(monkeypatch):
                 choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="not json"))]
             )
 
-    monkeypatch.setattr(order_service, "get_openai_client", lambda: FakeClient())
+    monkeypatch.setattr(ai_client, "get_openai_client", lambda: FakeClient())
     items = await order_service._parse_items("2x pizza")
     assert items == [{"product": "Margherita Pizza", "quantity": 2}]

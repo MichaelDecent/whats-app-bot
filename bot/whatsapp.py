@@ -2,9 +2,9 @@
 
 import asyncio
 import contextlib
+import logging
 from typing import Tuple
 
-import logging
 import httpx
 
 from .config import get_settings
@@ -16,7 +16,7 @@ _worker_task: asyncio.Task[None] | None = None
 
 
 def start_worker() -> None:
-    """Start background worker for queued messages."""
+    """Ensure the background worker is running."""
     global _send_queue, _worker_task
     if _send_queue is None:
         _send_queue = asyncio.Queue()
@@ -34,11 +34,10 @@ async def _process_queue() -> None:
             _send_queue.task_done()
 
 
-async def send_message(to: str, text: str, *, retries: int = 3, backoff: float = 1.0) -> None:
+async def _send(to: str, text: str, *, retries: int = 3, backoff: float = 1.0) -> None:
+    """Send a message with retry logic."""
     settings = get_settings()
-    url = (
-        f"https://graph.facebook.com/v18.0/{settings.WHATSAPP_PHONE_NUMBER_ID}/messages"
-    )
+    url = f"https://graph.facebook.com/v18.0/{settings.WHATSAPP_PHONE_NUMBER_ID}/messages"
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
@@ -46,40 +45,41 @@ async def send_message(to: str, text: str, *, retries: int = 3, backoff: float =
         "text": {"body": text},
     }
     headers = {"Authorization": f"Bearer {settings.WHATSAPP_ACCESS_TOKEN}"}
-    resp = await _client.post(url, json=payload, headers=headers)
-    resp.raise_for_status()
+    for attempt in range(1, retries + 1):
+        try:
+            resp = await _client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return
+        except httpx.HTTPError:
+            logging.exception("send_message attempt %s failed", attempt)
+            if attempt == retries:
+                logging.exception("send_message failed after %s attempts", retries)
+                raise
+            await asyncio.sleep(backoff * 2 ** (attempt - 1))
 
 
-async def send_message(to: str, text: str, *, use_queue: bool = False) -> None:
-    """Send a WhatsApp message.
-
-    If ``use_queue`` is ``True`` the message is placed on a background queue and
-    processed by a worker task. Otherwise the message is sent immediately.
-    """
-
+async def send_message(
+    to: str,
+    text: str,
+    *,
+    use_queue: bool = False,
+    retries: int = 3,
+    backoff: float = 1.0,
+) -> None:
+    """Public API for sending a WhatsApp message."""
     if use_queue:
         start_worker()
         assert _send_queue is not None
         await _send_queue.put((to, text))
     else:
-        await _send(to, text)
+        await _send(to, text, retries=retries, backoff=backoff)
 
 
 async def close() -> None:
+    """Shutdown the HTTP client and worker task."""
     if _worker_task:
         _worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await _worker_task
     await _client.aclose()
 
-    for attempt in range(1, retries + 1):
-        try:
-            resp = await _client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            return
-        except httpx.HTTPError as exc:
-            logging.exception("send_message attempt %s failed", attempt)
-            if attempt == retries:
-                logging.exception("send_message failed after %s attempts", retries)
-                raise
-            await asyncio.sleep(backoff * 2 ** (attempt - 1))
