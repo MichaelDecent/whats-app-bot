@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     MONGO_DB_NAME: str
     MONGO_COLLECTION_NAME: str
     SESSION_TTL_SECONDS: int
+    ORDER_ETA_MESSAGE: str = "Your order is on its way!"
 
     class Config:
         env_file = ".env"

@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 from typing import Tuple
 
+import logging
 import httpx
 
 from .config import get_settings
@@ -33,7 +34,7 @@ async def _process_queue() -> None:
             _send_queue.task_done()
 
 
-async def _send(to: str, text: str) -> None:
+async def send_message(to: str, text: str, *, retries: int = 3, backoff: float = 1.0) -> None:
     settings = get_settings()
     url = (
         f"https://graph.facebook.com/v18.0/{settings.WHATSAPP_PHONE_NUMBER_ID}/messages"
@@ -71,3 +72,14 @@ async def close() -> None:
             await _worker_task
     await _client.aclose()
 
+    for attempt in range(1, retries + 1):
+        try:
+            resp = await _client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return
+        except httpx.HTTPError as exc:
+            logging.exception("send_message attempt %s failed", attempt)
+            if attempt == retries:
+                logging.exception("send_message failed after %s attempts", retries)
+                raise
+            await asyncio.sleep(backoff * 2 ** (attempt - 1))

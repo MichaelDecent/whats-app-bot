@@ -2,26 +2,30 @@
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List
 
 from jinja2 import Template
-from ..ai_client import get_openai_client
+from ..ai_client import create_chat_completion
 from ..config import get_settings
 from ..database import get_db
 from ..whatsapp import send_message
+from ..models import OrderItem, Order
 
 CONFIRM_TEMPLATE = Template(
     "✅ Got your order:\n"
     "{% for item in items %}- {{item.quantity}}x {{item.name}} @ ₦{{item.unit_price}}\n{% endfor %}"
     "Total: ₦{{total}}\n"
-    "Please confirm (yes/no)"
+    "Please confirm (yes/no) or type 'change' to edit"
 )
 
 
 # accepted yes/no variants
 YES_WORDS = {"y", "yes", "sure", "ok"}
 NO_WORDS = {"n", "no", "nah"}
+# words indicating the user wants to change the order
+CHANGE_WORDS = {"change", "edit"}
 
 
 async def show_menu(user_id: str) -> None:
@@ -33,27 +37,60 @@ async def show_menu(user_id: str) -> None:
         return
 
     lines = ["Here is our menu:"]
-    for product in products:
-        lines.append(f"- {product['name']} (₦{product['price']})")
+    for idx, product in enumerate(products, start=1):
+        lines.append(f"{idx}. {product['name']} – ₦{product['price']}")
     lines.append(
-        "\nPlease type your order, e.g. 'I want 2 beef burgers and a bottle of water'."
+        "\nType the item numbers and quantities, or type `cancel` anytime."
     )
+    lines.append("Type 'cancel' anytime to cancel. During confirmation, reply 'edit' to modify items.")
     await send_message(user_id, "\n".join(lines))
+
+
+def _extract_items_regex(text: str, products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Simple regex based parser as a fallback."""
+    import re
+
+    pattern = re.compile(r"(\d+)x?\s*([A-Za-z ]+)", re.IGNORECASE)
+    items: List[Dict[str, Any]] = []
+    for qty, name in pattern.findall(text):
+        qty = int(qty)
+        name = name.strip().lower()
+        matched = None
+        for idx, p in enumerate(products):
+            if (
+                name in p["name"].lower()
+                or name == p["name"].split()[-1].lower()
+                or name == str(idx + 1)
+            ):
+                matched = p["name"]
+                break
+        if matched:
+            items.append({"product": matched, "quantity": qty})
+    return items
 
 
 async def _parse_items(text: str) -> List[Dict[str, Any]]:
     """Use OpenAI to parse free-text order into structured items."""
     db = get_db()
     products = await db.food_products.find({"is_available": True}).to_list(length=None)
+
     names = ", ".join(p.get("name") for p in products)
+    codes = ", ".join(f"{idx+1}={p['name']}" for idx, p in enumerate(products))
+    synonyms = ", ".join(
+        f"{p['name'].split()[-1].lower()}={p['name']}" for p in products
+    )
     prompt = (
         f"Available items: {names}\n"
+        f"Codes: {codes}\n"
+        f"Synonyms: {synonyms}\n"
         "Extract food items and their quantities from this message. "
         "Respond only with valid JSON in the form {'items': [{'product': '', 'quantity': 1}]}.\n"
+        "Example: 'I'd like 2x pizza and one burger' -> {'items': [{'product': 'Margherita Pizza', 'quantity': 2}, {'product': 'Cheeseburger', 'quantity': 1}]}\n"
+        "Example: '1 smoothie' -> {'items': [{'product': 'Fruit Smoothie', 'quantity': 1}]}\n"
         f"Message: {text}"
     )
     try:
-        response = await get_openai_client().chat.completions.create(
+        response = await create_chat_completion(
             model=get_settings().MODEL_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
@@ -63,20 +100,30 @@ async def _parse_items(text: str) -> List[Dict[str, Any]]:
         content = response.choices[0].message.content
 
         try:
-            return json.loads(content).get("items", [])
+            items = json.loads(content).get("items", [])
+            if items:
+                return items
         except json.JSONDecodeError:
             logging.error(f"Invalid JSON from OpenAI: {content}")
-            import re
 
-            json_match = re.search(r"\{.*?\}", content, re.DOTALL)
-            if json_match:
-                try:
-                    json_content = json_match.group(0)
-                    parsed = json.loads(json_content)
-                    return parsed.get("items", [])
-                except json.JSONDecodeError:
-                    logging.error(f"Failed to parse JSON from OpenAI: {json_content}")
-                    return []
+        import re
+
+        json_match = re.search(r"\{.*?\}", content, re.DOTALL)
+        if json_match:
+            try:
+                json_content = json_match.group(0)
+                parsed = json.loads(json_content)
+                if parsed.get("items"):
+                    return parsed["items"]
+            except json.JSONDecodeError:
+                logging.error(f"Failed to parse JSON from OpenAI: {json_content}")
+
+        # regex fallback on user text when OpenAI output unusable
+        regex_items = _extract_items_regex(text, products)
+        if regex_items:
+            return regex_items
+        logging.error(f"Could not parse order from text: {text}")
+        return []
 
     except Exception as e:
         logging.exception(f"Failed to parse order items: {e}")
@@ -90,6 +137,19 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
     db = get_db()
     data = session.get("data", {})
     step = session.get("step")
+
+    command = text.strip().lower()
+    if command == "cancel":
+        await db.sessions.delete_one({"user_id": user_id})
+        await send_message(user_id, "❌ Order cancelled.")
+        return {"status": "cancelled"}
+    if step == "await_confirm" and command == "edit":
+        await db.sessions.update_one(
+            {"user_id": user_id},
+            {"$set": {"step": "await_items", "updated_at": datetime.utcnow()}},
+        )
+        await send_message(user_id, "Okay, please retype your order message.")
+        return {"status": "awaiting"}
 
     if step == "await_items":
         parsed = await _parse_items(text)
@@ -169,7 +229,14 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 {"$set": {"step": "await_items", "updated_at": datetime.utcnow()}},
             )
             return {"status": "awaiting"}
-        await send_message(user_id, "Please reply with yes or no.")
+        if response in CHANGE_WORDS:
+            await send_message(user_id, "Okay, please retype your order message.")
+            await db.sessions.update_one(
+                {"user_id": user_id},
+                {"$set": {"step": "await_items", "updated_at": datetime.utcnow()}},
+            )
+            return {"status": "awaiting"}
+        await send_message(user_id, "Please reply with yes or no, or type 'change'.")
         return {"status": "awaiting"}
 
     if step == "await_address":
@@ -184,25 +251,49 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 }
             },
         )
-        await send_message(user_id, f"You entered: {text}\nIs this correct? (yes/no)")
+        await send_message(
+            user_id,
+            f"You entered: {text}\nIs this correct? (yes/no) or type 'change' to edit",
+        )
         return {"status": "awaiting"}
 
     if step == "confirm_address":
         response = text.strip().lower()
         if response in YES_WORDS:
-            order = {
-                "user_id": user_id,
-                "items": data.get("items"),
-                "total_price": data.get("total_price"),
-                "address": data.get("address"),
-                "created_at": datetime.utcnow(),
-            }
-            await db.orders.insert_one(order)
-            for item in data.get("items", []):
+            try:
+                items = [OrderItem.model_validate(i) for i in data.get("items", [])]
+                order_data = {
+                    "user_id": user_id,
+                    "items": items,
+                    "total_price": data.get("total_price"),
+                    "delivery_address": data.get("address"),
+                    "created_at": datetime.utcnow(),
+                }
+                order_model = Order.model_validate(order_data)
+            except Exception:
+                await send_message(user_id, "\u274c Invalid order data. Please start again.")
+                await db.sessions.delete_one({"user_id": user_id})
+                return {"status": "error"}
+
+            await db.orders.insert_one(order_model.model_dump(by_alias=True))
+            for item in items:
                 await db.food_products.update_one(
-                    {"_id": item["product_id"]},
-                    {"$inc": {"stock": -item["quantity"]}},
+                    {"_id": item.product_id},
+                    {"$inc": {"stock": -item.quantity}},
                 )
+                if not result:
+                    for u in updated:
+                        await db.food_products.update_one(
+                            {"_id": u["product_id"]},
+                            {"$inc": {"stock": u["quantity"]}},
+                        )
+                    await send_message(
+                        user_id,
+                        f"\u2757 Requested quantity not available. Only insufficient stock for {item['name']}",
+                    )
+                    return {"status": "awaiting"}
+                updated.append(item)
+            await db.orders.insert_one(order)
             delivery = settings.DELIVERY_PHONE_NUMBER
             if delivery:
                 lines = [f"New order from {user_id}:"]
@@ -216,6 +307,8 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 user_id,
                 f"\u2705 Your order has been placed! Total: \u20a6{data['total_price']}",
             )
+            if settings.ORDER_ETA_MESSAGE:
+                await send_message(user_id, settings.ORDER_ETA_MESSAGE)
             await db.sessions.delete_one({"user_id": user_id})
             return {"status": "ordered"}
 
