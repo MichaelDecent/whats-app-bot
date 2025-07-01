@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Dict
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
 class FoodProduct(BaseModel):
@@ -27,6 +27,14 @@ class OrderItem(BaseModel):
     name: str
     quantity: int
     unit_price: float
+
+    @model_validator(mode="after")
+    def check_values(cls, model: "OrderItem") -> "OrderItem":
+        if model.quantity <= 0:
+            raise ValueError("quantity must be greater than 0")
+        if model.unit_price < 0:
+            raise ValueError("unit_price must be non-negative")
+        return model
 
 
 class OrderStatus(str, Enum):
