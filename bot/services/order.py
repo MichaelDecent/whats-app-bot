@@ -307,6 +307,8 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 user_id,
                 f"\u2705 Your order has been placed! Total: \u20a6{data['total_price']}",
             )
+            if settings.ORDER_ETA_MESSAGE:
+                await send_message(user_id, settings.ORDER_ETA_MESSAGE)
             await db.sessions.delete_one({"user_id": user_id})
             return {"status": "ordered"}
 
