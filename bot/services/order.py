@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -33,10 +34,10 @@ async def show_menu(user_id: str) -> None:
         return
 
     lines = ["Here is our menu:"]
-    for product in products:
-        lines.append(f"- {product['name']} (₦{product['price']})")
+    for idx, product in enumerate(products, start=1):
+        lines.append(f"{idx}. {product['name']} – ₦{product['price']}")
     lines.append(
-        "\nPlease type your order, e.g. 'I want 2 beef burgers and a bottle of water'."
+        "\nType the item numbers and quantities, or type `cancel` anytime."
     )
     await send_message(user_id, "\n".join(lines))
 
@@ -45,6 +46,19 @@ async def _parse_items(text: str) -> List[Dict[str, Any]]:
     """Use OpenAI to parse free-text order into structured items."""
     db = get_db()
     products = await db.food_products.find({"is_available": True}).to_list(length=None)
+
+    # try to parse numeric codes first, e.g. "1x2 3"
+    numeric_items: List[Dict[str, Any]] = []
+    for code, qty in re.findall(r"(\d+)(?:\s*[xX]\s*(\d+))?", text):
+        idx = int(code) - 1
+        if 0 <= idx < len(products):
+            quantity = int(qty) if qty else 1
+            if quantity > 0:
+                numeric_items.append({"product": products[idx]["name"], "quantity": quantity})
+
+    if numeric_items:
+        return numeric_items
+
     names = ", ".join(p.get("name") for p in products)
     prompt = (
         f"Available items: {names}\n"
@@ -66,7 +80,6 @@ async def _parse_items(text: str) -> List[Dict[str, Any]]:
             return json.loads(content).get("items", [])
         except json.JSONDecodeError:
             logging.error(f"Invalid JSON from OpenAI: {content}")
-            import re
 
             json_match = re.search(r"\{.*?\}", content, re.DOTALL)
             if json_match:
