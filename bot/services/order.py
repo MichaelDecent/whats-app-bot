@@ -45,28 +45,47 @@ async def show_menu(user_id: str) -> None:
     await send_message(user_id, "\n".join(lines))
 
 
+def _extract_items_regex(text: str, products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Simple regex based parser as a fallback."""
+    import re
+
+    pattern = re.compile(r"(\d+)x?\s*([A-Za-z ]+)", re.IGNORECASE)
+    items: List[Dict[str, Any]] = []
+    for qty, name in pattern.findall(text):
+        qty = int(qty)
+        name = name.strip().lower()
+        matched = None
+        for idx, p in enumerate(products):
+            if (
+                name in p["name"].lower()
+                or name == p["name"].split()[-1].lower()
+                or name == str(idx + 1)
+            ):
+                matched = p["name"]
+                break
+        if matched:
+            items.append({"product": matched, "quantity": qty})
+    return items
+
+
 async def _parse_items(text: str) -> List[Dict[str, Any]]:
     """Use OpenAI to parse free-text order into structured items."""
     db = get_db()
     products = await db.food_products.find({"is_available": True}).to_list(length=None)
 
-    # try to parse numeric codes first, e.g. "1x2 3"
-    numeric_items: List[Dict[str, Any]] = []
-    for code, qty in re.findall(r"(\d+)(?:\s*[xX]\s*(\d+))?", text):
-        idx = int(code) - 1
-        if 0 <= idx < len(products):
-            quantity = int(qty) if qty else 1
-            if quantity > 0:
-                numeric_items.append({"product": products[idx]["name"], "quantity": quantity})
-
-    if numeric_items:
-        return numeric_items
-
     names = ", ".join(p.get("name") for p in products)
+    codes = ", ".join(f"{idx+1}={p['name']}" for idx, p in enumerate(products))
+    synonyms = ", ".join(
+        f"{p['name'].split()[-1].lower()}={p['name']}" for p in products
+    )
     prompt = (
         f"Available items: {names}\n"
+        f"Codes: {codes}\n"
+        f"Synonyms: {synonyms}\n"
         "Extract food items and their quantities from this message. "
         "Respond only with valid JSON in the form {'items': [{'product': '', 'quantity': 1}]}.\n"
+        "Example: 'I'd like 2x pizza and one burger' -> {'items': [{'product': 'Margherita Pizza', 'quantity': 2}, {'product': 'Cheeseburger', 'quantity': 1}]}\n"
+        "Example: '1 smoothie' -> {'items': [{'product': 'Fruit Smoothie', 'quantity': 1}]}\n"
         f"Message: {text}"
     )
     try:
@@ -80,19 +99,30 @@ async def _parse_items(text: str) -> List[Dict[str, Any]]:
         content = response.choices[0].message.content
 
         try:
-            return json.loads(content).get("items", [])
+            items = json.loads(content).get("items", [])
+            if items:
+                return items
         except json.JSONDecodeError:
             logging.error(f"Invalid JSON from OpenAI: {content}")
 
-            json_match = re.search(r"\{.*?\}", content, re.DOTALL)
-            if json_match:
-                try:
-                    json_content = json_match.group(0)
-                    parsed = json.loads(json_content)
-                    return parsed.get("items", [])
-                except json.JSONDecodeError:
-                    logging.error(f"Failed to parse JSON from OpenAI: {json_content}")
-                    return []
+        import re
+
+        json_match = re.search(r"\{.*?\}", content, re.DOTALL)
+        if json_match:
+            try:
+                json_content = json_match.group(0)
+                parsed = json.loads(json_content)
+                if parsed.get("items"):
+                    return parsed["items"]
+            except json.JSONDecodeError:
+                logging.error(f"Failed to parse JSON from OpenAI: {json_content}")
+
+        # regex fallback on user text when OpenAI output unusable
+        regex_items = _extract_items_regex(text, products)
+        if regex_items:
+            return regex_items
+        logging.error(f"Could not parse order from text: {text}")
+        return []
 
     except Exception as e:
         logging.exception(f"Failed to parse order items: {e}")
