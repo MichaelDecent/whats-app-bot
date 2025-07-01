@@ -5,6 +5,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Any, Dict, List
+from bson import ObjectId
 
 from jinja2 import Template
 from ..ai_client import create_chat_completion
@@ -181,7 +182,7 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
 
             order_items.append(
                 {
-                    "product_id": product.get("_id"),
+                    "product_id": str(product.get("_id")),
                     "name": product["name"],
                     "quantity": qty,
                     "unit_price": product["price"],
@@ -261,7 +262,11 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
         response = text.strip().lower()
         if response in YES_WORDS:
             try:
-                items = [OrderItem.model_validate(i) for i in data.get("items", [])]
+                raw_items = data.get("items", [])
+                for i in raw_items:
+                    if isinstance(i.get("product_id"), ObjectId):
+                        i["product_id"] = str(i["product_id"])
+                items = [OrderItem.model_validate(i) for i in raw_items]
                 order_data = {
                     "user_id": user_id,
                     "items": items,
@@ -275,25 +280,26 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 await db.sessions.delete_one({"user_id": user_id})
                 return {"status": "error"}
 
-            await db.orders.insert_one(order_model.model_dump(by_alias=True))
+            updated: List[OrderItem] = []
             for item in items:
-                await db.food_products.update_one(
-                    {"_id": item.product_id},
+                result = await db.food_products.update_one(
+                    {"_id": ObjectId(item.product_id), "stock": {"$gte": item.quantity}},
                     {"$inc": {"stock": -item.quantity}},
                 )
-                if not result:
+                if result.matched_count == 0:
                     for u in updated:
                         await db.food_products.update_one(
-                            {"_id": u["product_id"]},
-                            {"$inc": {"stock": u["quantity"]}},
+                            {"_id": ObjectId(u.product_id)},
+                            {"$inc": {"stock": u.quantity}},
                         )
                     await send_message(
                         user_id,
-                        f"\u2757 Requested quantity not available. Only insufficient stock for {item['name']}",
+                        f"\u2757 Requested quantity not available. Only insufficient stock for {item.name}",
                     )
                     return {"status": "awaiting"}
                 updated.append(item)
-            await db.orders.insert_one(order)
+
+            await db.orders.insert_one(order_model.model_dump(by_alias=True))
             delivery = settings.DELIVERY_PHONE_NUMBER
             if delivery:
                 lines = [f"New order from {user_id}:"]
@@ -307,8 +313,9 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 user_id,
                 f"\u2705 Your order has been placed! Total: \u20a6{data['total_price']}",
             )
-            if settings.ORDER_ETA_MESSAGE:
-                await send_message(user_id, settings.ORDER_ETA_MESSAGE)
+            eta_message = getattr(settings, "ORDER_ETA_MESSAGE", None)
+            if eta_message:
+                await send_message(user_id, eta_message)
             await db.sessions.delete_one({"user_id": user_id})
             return {"status": "ordered"}
 
