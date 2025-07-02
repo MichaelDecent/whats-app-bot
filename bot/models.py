@@ -4,6 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Dict
 
+from bson import ObjectId
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
@@ -46,7 +47,7 @@ class OrderStatus(str, Enum):
 class Order(BaseModel):
     """Customer order model."""
 
-    id: Optional[str] = Field(default=None, alias="_id")
+    id: Optional[str] = Field(default_factory=lambda: str(ObjectId()), alias="_id")
     user_id: str
     items: List[OrderItem]
     total_price: float

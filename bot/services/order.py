@@ -20,7 +20,7 @@ CONFIRM_TEMPLATE = Template(
     "{% for item in items %}🍽️ *{{item.quantity}}x* _{{item.name}}_ @ ₦{{item.unit_price}}\n{% endfor %}"
     "-----------------------------\n"
     "💰 *Total:* ₦{{total}}\n"
-    "Please confirm (yes/no) or type 'change' to edit."
+    "Please confirm (`yes`/`no`) or type `edit` to change."
 )
 
 
@@ -41,12 +41,10 @@ async def show_menu(user_id: str) -> None:
 
     lines = ["🍽️ *Here is our menu:*"]
     for idx, product in enumerate(products, start=1):
-        lines.append(
-            f"{idx}. _{product['name']}_ – ₦{product['price']} ({'✅ Available' if product['is_available'] else '❌ Out of stock'})"
-        )
+        lines.append(f"{idx}. _{product['name']}_ – ₦{product['price']}")
     lines.append(
-        "\n📝 *Type the item numbers and quantities.*\n"
-        "Type `cancel` anytime to cancel. During confirmation, reply `edit` to modify items."
+        "\n📝 *Type the item numbers and quantities.*\n\n"
+        "\nType `cancel` anytime to cancel. During confirmation, reply `edit` to modify items."
     )
     await send_message(user_id, "\n".join(lines))
 
@@ -254,7 +252,7 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
         )
         await send_message(
             user_id,
-            f"📍 You entered: _{text}_\nIs this correct? (yes/no) or type 'change' to edit.",
+            f"📍 You entered: _{text}_\nIs this correct? (`yes`/`no`) or type `edit` to change.",
         )
         return {"status": "awaiting"}
 
