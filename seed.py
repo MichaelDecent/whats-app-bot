@@ -3,7 +3,10 @@
 import logging
 from typing import List
 
+from sqlalchemy import select
+
 from bot.database import get_db
+from bot.models import FoodProduct, FoodProductValidator
 
 logger = logging.getLogger(__name__)
 
@@ -83,13 +86,37 @@ DUMMY_PRODUCTS: List[dict] = [
 
 async def seed_food_products() -> None:
     """Seed the database with dummy food products if none exist."""
-    db = get_db()
+    async_session_maker = get_db()
 
-    existing_count = await db.food_products.count_documents({})
+    async with async_session_maker() as session:
+        # Check if products already exist
+        stmt = select(FoodProduct)
+        result = await session.execute(stmt)
+        existing_products = result.scalars().all()
 
-    if existing_count > 0:
-        logger.info(f"Found {existing_count} existing food products. Skipping seed.")
-        return
+        if existing_products:
+            logger.info(
+                f"Found {len(existing_products)} existing food products. Skipping seed."
+            )
+            return
 
-    result = await db.food_products.insert_many(DUMMY_PRODUCTS)
-    logger.info(f"Seeded {len(result.inserted_ids)} food products to database")
+        # Validate and create products
+        products_to_add = []
+        for product_data in DUMMY_PRODUCTS:
+            try:
+                # Validate with Pydantic
+                validated_data = FoodProductValidator.model_validate(product_data)
+                # Create SQLAlchemy model instance
+                product = FoodProduct(**validated_data.model_dump())
+                products_to_add.append(product)
+            except Exception as e:
+                logger.error(
+                    f"Error validating product {product_data.get('name', 'Unknown')}: {e}"
+                )
+                continue
+
+        # Add all products to the session
+        session.add_all(products_to_add)
+        await session.commit()
+
+        logger.info(f"Seeded {len(products_to_add)} food products to database")

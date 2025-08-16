@@ -30,3 +30,5 @@ nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
+
+whatsapp-bot.dbpytes
