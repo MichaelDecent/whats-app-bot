@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from sqlalchemy import Integer, String, Float, Boolean, DateTime, Text, ForeignKey, JSON
 from sqlalchemy.orm import relationship, Mapped, mapped_column
@@ -20,6 +20,19 @@ class OrderStatus(str, Enum):
 class ServiceType(str, Enum):
     order = "order"
     nutrition = "nutrition"
+
+
+class AddressCollectionMethod(str, Enum):
+    text = "text"
+    location = "location"
+    address_message = "address_message"
+
+
+class AddressValidationStatus(str, Enum):
+    pending = "pending"
+    valid = "valid"
+    invalid = "invalid"
+    not_validated = "not_validated"
 
 
 # SQLAlchemy Models
@@ -45,6 +58,23 @@ class Order(Base):
     user_id: Mapped[str] = mapped_column(String, nullable=False)
     total_price: Mapped[float] = mapped_column(Float, nullable=False)
     delivery_address: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Location data (if provided by user)
+    latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+    # Address collection and validation metadata
+    address_collection_method: Mapped[str] = mapped_column(
+        String, nullable=False, default=AddressCollectionMethod.text.value
+    )
+    address_validation_status: Mapped[str] = mapped_column(
+        String, nullable=False, default=AddressValidationStatus.not_validated.value
+    )
+    validated_address: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    address_validation_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSON, nullable=True
+    )
+
     status: Mapped[str] = mapped_column(
         String, nullable=False, default=OrderStatus.pending.value
     )
@@ -92,6 +122,36 @@ class UserSession(Base):
     history: Mapped[List[Dict[str, str]]] = mapped_column(
         JSON, nullable=False, default=[]
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+
+
+class UserPreferences(Base):
+    """SQLAlchemy model for user preferences."""
+
+    __tablename__ = "user_preferences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+
+    # Address collection preferences
+    preferred_address_method: Mapped[str] = mapped_column(
+        String, nullable=False, default=AddressCollectionMethod.text.value
+    )
+    saved_addresses: Mapped[List[Dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=[]
+    )
+
+    # General preferences
+    language: Mapped[str] = mapped_column(String, nullable=False, default="en")
+    notifications_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow
     )
@@ -152,3 +212,22 @@ class FoodProductValidator(BaseModel):
         if model.stock < 0:
             raise ValueError("stock must be non-negative")
         return model
+
+
+class LocationData(BaseModel):
+    """Pydantic model for location data."""
+
+    latitude: float
+    longitude: float
+    address: Optional[str] = None
+
+
+class AddressValidationResult(BaseModel):
+    """Pydantic model for address validation results."""
+
+    is_valid: bool
+    formatted_address: str
+    original_address: str
+    confidence_score: Optional[float] = None
+    components: Optional[Dict[str, str]] = None
+    suggestions: Optional[List[str]] = None

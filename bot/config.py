@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     SESSION_TTL_SECONDS: int = 3600  # Default 1 hour
     ORDER_ETA_MESSAGE: str = "Your order is on its way!"
 
+    # Address validation settings
+    GOOGLE_PLACES_API_KEY: str | None = None
+    ENABLE_ADDRESS_VALIDATION: bool = False
+    DEFAULT_COUNTRY_CODE: str = "NG"  # Nigeria by default
+    ENABLE_LOCATION_SHARING: bool = True
+
     class Config:
         env_file = ".env"
 

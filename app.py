@@ -1,12 +1,16 @@
 """FastAPI application for a scalable WhatsApp bot."""
 
-from typing import Dict
+import logging
+from typing import Dict, Any
 
 from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import PlainTextResponse
 
+logger = logging.getLogger(__name__)
+
 from bot import config, database, session
 from bot.services import nutrition, order
+from bot.services.address_validation import close_address_service
 from bot.whatsapp import close as whatsapp_close
 from bot.whatsapp import send_message, start_worker
 from seed import seed_food_products
@@ -25,6 +29,7 @@ async def startup() -> None:
 @app.on_event("shutdown")
 async def shutdown() -> None:
     await whatsapp_close()
+    await close_address_service()
     await database.close()
 
 
@@ -50,8 +55,20 @@ async def whatsapp_webhook(
     data = await request.json()
     try:
         message = data["entry"][0]["changes"][0]["value"]["messages"][0]
-        text = message["text"]["body"].strip()
+        message_type = message.get("type", "text")
         user_id = message["from"]
+
+        # Handle different message types
+        if message_type == "text":
+            text = message["text"]["body"].strip()
+        elif message_type == "location":
+            # Handle location messages
+            location = message["location"]
+            return await handle_location_message(user_id, location, background_tasks)
+        else:
+            # Ignore other message types for now
+            return {"status": "ignored"}
+
     except Exception:
         return {"status": "ignored"}
 
@@ -106,3 +123,101 @@ async def whatsapp_webhook(
         user_id, "⚠️ *Session ended.* Please start again if you need anything else!"
     )
     return {"status": "ended"}
+
+
+async def handle_location_message(
+    user_id: str, location: Dict[str, Any], background_tasks: BackgroundTasks
+) -> Dict[str, str]:
+    """Handle location messages from users."""
+    from bot.services.address_validation import get_address_service
+
+    latitude = location.get("latitude")
+    longitude = location.get("longitude")
+
+    if not latitude or not longitude:
+        background_tasks.add_task(
+            send_message,
+            user_id,
+            "❌ Could not read location data. Please try again or enter your address manually.",
+            use_queue=True,
+        )
+        return {"status": "error"}
+
+    # Get current session to understand context
+    session_data = await session.get(user_id)
+    if not session_data:
+        background_tasks.add_task(
+            send_message,
+            user_id,
+            "🔄 Please start a new conversation by sending any message.",
+            use_queue=True,
+        )
+        return {"status": "no_session"}
+
+    # Check if user is in an order flow and expecting address
+    service = session_data.get("service")
+    step = session_data.get("step")
+
+    if service == "order" and step in [
+        "await_address_choice",
+        "await_address",
+        "await_location",
+    ]:
+        # Process location for order delivery
+        address_service = get_address_service()
+
+        # Convert location to address
+        try:
+            address = await address_service.reverse_geocode(latitude, longitude)
+            if not address:
+                background_tasks.add_task(
+                    send_message,
+                    user_id,
+                    "❌ Could not determine address from your location. Please enter your address manually.",
+                    use_queue=True,
+                )
+                return {"status": "geocoding_failed"}
+
+            # Store location data in session
+            data = session_data.get("data", {})
+            data["location"] = {
+                "latitude": latitude,
+                "longitude": longitude,
+                "address": address,
+            }
+
+            await session.update(user_id, data=data, step="confirm_location_address")
+
+            # Ask user to confirm the address
+            background_tasks.add_task(
+                send_message,
+                user_id,
+                f"📍 *Location received!*\n\n"
+                f"Address: _{address}_\n\n"
+                f"Is this correct for delivery? Reply:\n"
+                f"• *yes* to confirm\n"
+                f"• *no* to enter manually",
+                use_queue=True,
+            )
+
+            return {"status": "location_processed"}
+
+        except Exception as e:
+            logger.error(f"Error processing location: {e}")
+            background_tasks.add_task(
+                send_message,
+                user_id,
+                "❌ Error processing location. Please try entering your address manually.",
+                use_queue=True,
+            )
+            return {"status": "error"}
+    else:
+        # Location shared outside of order context
+        background_tasks.add_task(
+            send_message,
+            user_id,
+            "📍 Thank you for sharing your location! \n\n"
+            "To place an order, please start by typing '1' for food ordering.",
+            use_queue=True,
+        )
+        return {"status": "location_noted"}

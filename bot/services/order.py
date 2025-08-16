@@ -12,9 +12,16 @@ from sqlalchemy import select
 from ..ai_client import create_chat_completion
 from ..config import get_settings
 from ..database import get_db
-from ..models import Order, OrderItem, FoodProduct
+from ..models import (
+    Order,
+    OrderItem,
+    FoodProduct,
+    AddressCollectionMethod,
+    AddressValidationStatus,
+)
 from ..whatsapp import send_message
 from .. import session as session_utils
+from .address_validation import get_address_service
 
 CONFIRM_TEMPLATE = Template(
     "✅ *Order Summary:*\n"
@@ -95,7 +102,9 @@ async def _parse_items(text: str) -> List[Dict[str, Any]]:
         f"Synonyms: {synonyms}\n"
         "Extract food items and their quantities from this message. "
         "Respond only with valid JSON in the form {'items': [{'product': '', 'quantity': 1}]}.\n"
-        "Example: 'I'd like 2x pizza and one burger' -> {'items': [{'product': 'Margherita Pizza', 'quantity': 2}, {'product': 'Cheeseburger', 'quantity': 1}]}\n"
+        "Example: 'I'd like 2x pizza and one burger' -> "
+        "{'items': [{'product': 'Margherita Pizza', 'quantity': 2}, "
+        "{'product': 'Cheeseburger', 'quantity': 1}]}\n"
         "Example: '1 smoothie' -> {'items': [{'product': 'Fruit Smoothie', 'quantity': 1}]}\n"
         f"Message: {text}"
     )
@@ -188,7 +197,8 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 if product.stock < qty:
                     await send_message(
                         user_id,
-                        f"⚠️ Requested quantity not available. Only {product.stock} unit(s) of *{product.name}* in stock.",
+                        f"⚠️ Requested quantity not available. "
+                        f"Only {product.stock} unit(s) of *{product.name}* in stock.",
                     )
                     return {"status": "awaiting"}
 
@@ -219,8 +229,23 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
     if step == "await_confirm":
         response = text.strip().lower()
         if response in YES_WORDS:
-            await session_utils.update(user_id, step="await_address")
-            await send_message(user_id, "🏠 Please provide your *delivery address*.")
+            # Offer address collection options
+            await session_utils.update(user_id, step="await_address_choice")
+
+            if settings.ENABLE_LOCATION_SHARING:
+                await send_message(
+                    user_id,
+                    "📍 *How would you like to provide your delivery address?*\n\n"
+                    "1️⃣ Share your location 📱\n"
+                    "2️⃣ Type your address ✍️\n\n"
+                    "Reply with *1* or *2*",
+                )
+            else:
+                await send_message(
+                    user_id, "🏠 Please provide your *delivery address*."
+                )
+                await session_utils.update(user_id, step="await_address")
+
             return {"status": "awaiting"}
         if response in NO_WORDS or response in CHANGE_WORDS:
             await send_message(user_id, "✏️ Okay, please retype your order message.")
@@ -231,14 +256,112 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
         )
         return {"status": "awaiting"}
 
+    if step == "await_address_choice":
+        response = text.strip().lower()
+        if response == "1":
+            await session_utils.update(user_id, step="await_location")
+            await send_message(
+                user_id,
+                "📍 *Please share your location*\n\n"
+                "1. Tap the 📎 (attachment) button\n"
+                "2. Select 'Location'\n"
+                "3. Choose 'Current Location' or select on map\n"
+                "4. Tap 'Send'\n\n"
+                "Or type *back* to enter address manually.",
+            )
+            return {"status": "awaiting"}
+        elif response == "2":
+            await session_utils.update(user_id, step="await_address")
+            await send_message(user_id, "🏠 Please type your *delivery address*:")
+            return {"status": "awaiting"}
+        else:
+            await send_message(
+                user_id,
+                "❓ Please reply with *1* (share location) or *2* (type address).",
+            )
+            return {"status": "awaiting"}
+
+    if step == "await_location":
+        # Handle text responses while waiting for location
+        if command == "back":
+            await session_utils.update(user_id, step="await_address")
+            await send_message(user_id, "🏠 Please type your *delivery address*:")
+            return {"status": "awaiting"}
+        else:
+            await send_message(
+                user_id,
+                "📍 I'm waiting for your location. "
+                "Please use the location sharing feature\n\n"
+                "Or type *back* to enter your address manually.",
+            )
+            return {"status": "awaiting"}
+
     if step == "await_address":
-        data["address"] = text
-        await session_utils.update(user_id, data=data, step="confirm_address")
-        await send_message(
-            user_id,
-            f"📍 You entered: _{text}_\nIs this correct? (`yes`/`no`) or type `edit` to change.",
+        # Validate address if validation is enabled
+        address_service = get_address_service()
+        validation_result = await address_service.validate_address(
+            text, settings.DEFAULT_COUNTRY_CODE
         )
+
+        data["address"] = text
+        data["address_collection_method"] = AddressCollectionMethod.text.value
+        data["address_validation"] = {
+            "is_valid": validation_result.is_valid,
+            "formatted_address": validation_result.formatted_address,
+            "confidence_score": validation_result.confidence_score,
+        }
+
+        await session_utils.update(user_id, data=data, step="confirm_address")
+
+        # Show validation results to user
+        if validation_result.is_valid and validation_result.formatted_address != text:
+            await send_message(
+                user_id,
+                f"📍 *Address verified and formatted:*\n\n"
+                f"_{validation_result.formatted_address}_\n\n"
+                f"Is this correct? Reply *yes* to confirm or *no* to try again.",
+            )
+        else:
+            await send_message(
+                user_id,
+                f"📍 You entered: _{text}_\n\n"
+                f"Is this correct? Reply *yes* to confirm or *no* to try again.",
+            )
+
         return {"status": "awaiting"}
+
+    if step == "confirm_location_address":
+        # Handle location address confirmation
+        response = text.strip().lower()
+        if response in YES_WORDS:
+            # Use the location-based address
+            location_data = data.get("location", {})
+            data["address"] = location_data.get("address", "")
+            data["latitude"] = location_data.get("latitude")
+            data["longitude"] = location_data.get("longitude")
+            data["address_collection_method"] = AddressCollectionMethod.location.value
+            data["address_validation"] = {
+                "is_valid": True,
+                "formatted_address": location_data.get("address", ""),
+                "confidence_score": 0.9,  # High confidence for GPS location
+            }
+
+            await session_utils.update(user_id, data=data, step="confirm_address")
+            await send_message(
+                user_id,
+                f"✅ *Using your location for delivery*\n\n"
+                f"📍 {location_data.get('address', '')}\n\n"
+                f"Final confirmation - is this correct? "
+                f"Reply *yes* to place order or *no* to change.",
+            )
+            return {"status": "awaiting"}
+        elif response in NO_WORDS:
+            await session_utils.update(user_id, step="await_address")
+            await send_message(user_id, "🏠 Please type your *delivery address*:")
+            return {"status": "awaiting"}
+        else:
+            await send_message(user_id, "❓ Please reply with *yes* or *no*.")
+            return {"status": "awaiting"}
 
     if step == "confirm_address":
         response = text.strip().lower()
@@ -248,10 +371,26 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                 # Create the order and order items in the database
                 async with async_session_maker() as db_session:
                     # Create the order first
+                    # Get address validation data
+                    address_validation = data.get("address_validation", {})
+
                     order = Order(
                         user_id=user_id,
                         total_price=data.get("total_price"),
                         delivery_address=data.get("address"),
+                        latitude=data.get("latitude"),
+                        longitude=data.get("longitude"),
+                        address_collection_method=data.get(
+                            "address_collection_method",
+                            AddressCollectionMethod.text.value,
+                        ),
+                        address_validation_status=(
+                            AddressValidationStatus.valid.value
+                            if address_validation.get("is_valid")
+                            else AddressValidationStatus.not_validated.value
+                        ),
+                        validated_address=address_validation.get("formatted_address"),
+                        address_validation_metadata=address_validation,
                         created_at=datetime.utcnow(),
                     )
                     db_session.add(order)
@@ -276,7 +415,7 @@ async def handle(user_id: str, text: str, session: Dict[str, Any]) -> Dict[str, 
                             if not product:
                                 await send_message(
                                     user_id,
-                                    f"\u274c Product not found. Please start again.",
+                                    "\u274c Product not found. Please start again.",
                                 )
                             else:
                                 await send_message(
